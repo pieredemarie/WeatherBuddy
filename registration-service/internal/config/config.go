@@ -8,7 +8,8 @@ import (
 )
 
 type Config struct {
-	BotToken string
+	BotToken    string
+	PostgresDSN string
 }
 
 func MustLoad() *Config {

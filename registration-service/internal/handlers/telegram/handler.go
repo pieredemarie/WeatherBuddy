@@ -4,29 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"registration-service/internal/geocoding"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"gopkg.in/telebot.v4"
+
+	"registration-service/internal/geocoding"
+	"registration-service/internal/model"
 )
 
-// UserStore — интерфейс поверх будущего слоя БД.
-// Пока можно подставить in-memory реализацию для разработки бота
-// без готовой Postgres/репозитория.
 type UserStore interface {
-	Save(u RegisteredUser) error
+	Save(ctx context.Context, u model.User) error
 }
 
-type RegisteredUser struct {
-	TelegramID int64
-	City       string
-	Timezone   string // IANA, напр. "Europe/Moscow" — резолвится через Geocoder, не вводится вручную
-	NotifyTime string // "HH:MM", парсинг в time.Time — на уровне сервиса/БД, не тут
-}
-
-// registrationStep — на каком шаге диалога находится пользователь.
 type registrationStep int
 
 const (
@@ -34,17 +26,15 @@ const (
 	stepAwaitingTime
 )
 
-// registrationState — прогресс диалога one-message-at-a-time.
 type registrationState struct {
 	step       registrationStep
-	city       string // нормализованное имя от geocoder
+	city       string
+	latitude   float64
+	longitude  float64
 	timezone   string
-	notifyTime string
+	notifyTime time.Time
 }
 
-// stateStore — потокобезопасное хранилище состояний регистрации.
-// Апдейты от telebot могут прилетать конкурентно для разных пользователей,
-// поэтому доступ к карте всегда идёт через мьютекс.
 type stateStore struct {
 	mu     sync.Mutex
 	states map[int64]*registrationState
@@ -105,14 +95,6 @@ func (h *Handler) Register() {
 	h.bot.Handle(telebot.OnText, h.handleRegistrationMessage)
 }
 
-func (h *Handler) Start() {
-	h.bot.Start()
-}
-
-func (h *Handler) start(c telebot.Context) error {
-	return c.Send("WeatherBuddy started")
-}
-
 func (h *Handler) register(c telebot.Context) error {
 	if c.Sender() == nil {
 		return nil
@@ -142,7 +124,7 @@ func (h *Handler) handleRegistrationMessage(c telebot.Context) error {
 
 	state, exists := h.states.get(userID)
 	if !exists {
-		// пользователь не в процессе регистрации — просто игнорируем текст
+
 		return nil
 	}
 
@@ -152,6 +134,7 @@ func (h *Handler) handleRegistrationMessage(c telebot.Context) error {
 	case stepAwaitingTime:
 		return h.handleTimeStep(c, userID, state)
 	default:
+
 		h.states.delete(userID)
 		return c.Send("Что-то пошло не так, начните заново: /register")
 	}
@@ -171,11 +154,12 @@ func (h *Handler) handleCityStep(c telebot.Context, userID int64, state *registr
 	case errors.Is(err, geocoding.ErrCityNotFound):
 		return c.Send("Не смог найти такой город. Проверьте написание и попробуйте ещё раз:")
 	case err != nil:
-
 		return c.Send("Не получилось определить часовой пояс для этого города (сервис временно недоступен). Попробуйте ещё раз чуть позже:")
 	}
 
 	state.city = loc.City
+	state.latitude = loc.Latitude
+	state.longitude = loc.Longitude
 	state.timezone = loc.Timezone
 	state.step = stepAwaitingTime
 	h.states.set(userID, state)
@@ -188,18 +172,26 @@ func (h *Handler) handleCityStep(c telebot.Context, userID int64, state *registr
 
 func (h *Handler) handleTimeStep(c telebot.Context, userID int64, state *registrationState) error {
 	timeText := strings.TrimSpace(c.Text())
-	if _, err := time.Parse("15:04", timeText); err != nil {
+	parsedTime, err := time.Parse("15:04", timeText)
+	if err != nil {
 		return c.Send("Не похоже на время в формате HH:MM. Попробуйте ещё раз, например 08:00:")
 	}
-	state.notifyTime = timeText
+	state.notifyTime = parsedTime
 
-	user := RegisteredUser{
-		TelegramID: userID,
-		City:       state.city,
-		Timezone:   state.timezone,
-		NotifyTime: state.notifyTime,
+	user := model.User{
+		ContactType:  model.ContactTelegram,
+		ContactValue: strconv.FormatInt(userID, 10),
+		City:         state.city,
+		Latitude:     state.latitude,
+		Longitude:    state.longitude,
+		Timezone:     state.timezone,
+		NotifyTime:   state.notifyTime,
 	}
-	if err := h.store.Save(user); err != nil {
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := h.store.Save(ctx, user); err != nil {
 		return c.Send("Не получилось сохранить регистрацию, попробуйте позже.")
 	}
 
@@ -207,6 +199,6 @@ func (h *Handler) handleTimeStep(c telebot.Context, userID int64, state *registr
 
 	return c.Send(fmt.Sprintf(
 		"Готово! Буду присылать погоду в %s (%s) каждый день в %s.",
-		state.city, state.timezone, state.notifyTime,
+		state.city, state.timezone, state.notifyTime.Format("15:04"),
 	))
 }
