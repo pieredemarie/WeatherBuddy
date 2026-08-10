@@ -15,26 +15,6 @@ import (
 	"registration-service/internal/model"
 )
 
-type UserStore interface {
-	Save(ctx context.Context, u model.User) error
-}
-
-type registrationStep int
-
-const (
-	stepAwaitingCity registrationStep = iota
-	stepAwaitingTime
-)
-
-type registrationState struct {
-	step       registrationStep
-	city       string
-	latitude   float64
-	longitude  float64
-	timezone   string
-	notifyTime time.Time
-}
-
 type stateStore struct {
 	mu     sync.Mutex
 	states map[int64]*registrationState
@@ -93,15 +73,6 @@ func (h *Handler) Register() {
 	h.bot.Handle("/register", h.register)
 	h.bot.Handle("/cancel", h.cancel)
 	h.bot.Handle(telebot.OnText, h.handleRegistrationMessage)
-}
-
-func (h *Handler) register(c telebot.Context) error {
-	if c.Sender() == nil {
-		return nil
-	}
-	userID := c.Sender().ID
-	h.states.set(userID, &registrationState{step: stepAwaitingCity})
-	return c.Send("Введите ваш город:")
 }
 
 func (h *Handler) cancel(c telebot.Context) error {
