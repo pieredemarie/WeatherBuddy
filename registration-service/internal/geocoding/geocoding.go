@@ -11,7 +11,7 @@ type GeoLocation struct {
 	City      string
 	Latitude  float64
 	Longitude float64
-	Timezone  string // i.e. "Europe/Moscow"
+	Timezone  string // for example: "Europe/Moscow"
 }
 
 type Geocoder interface {

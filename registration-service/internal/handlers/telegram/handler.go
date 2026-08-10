@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"registration-service/internal/geocoding"
 	"strings"
 	"sync"
 	"time"
@@ -75,11 +76,11 @@ func (s *stateStore) delete(userID int64) {
 type Handler struct {
 	bot      *telebot.Bot
 	store    UserStore
-	geocoder Geocoder
+	geocoder geocoding.Geocoder
 	states   *stateStore
 }
 
-func New(token string, store UserStore, geocoder Geocoder) (*Handler, error) {
+func New(token string, store UserStore, geocoder geocoding.Geocoder) (*Handler, error) {
 	bot, err := telebot.NewBot(telebot.Settings{
 		Token: token,
 		Poller: &telebot.LongPoller{
@@ -151,7 +152,6 @@ func (h *Handler) handleRegistrationMessage(c telebot.Context) error {
 	case stepAwaitingTime:
 		return h.handleTimeStep(c, userID, state)
 	default:
-		// не должно случиться, но подчищаем битое состояние вместо зависания
 		h.states.delete(userID)
 		return c.Send("Что-то пошло не так, начните заново: /register")
 	}
@@ -163,16 +163,15 @@ func (h *Handler) handleCityStep(c telebot.Context, userID int64, state *registr
 		return c.Send("Город не может быть пустым. Попробуйте ещё раз:")
 	}
 
-	// Таймаут на сетевой вызов, чтобы бот не подвисал, если geocoding API недоступен.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	loc, err := h.geocoder.Resolve(ctx, cityInput)
 	switch {
-	case errors.Is(err, ErrCityNotFound):
+	case errors.Is(err, geocoding.ErrCityNotFound):
 		return c.Send("Не смог найти такой город. Проверьте написание и попробуйте ещё раз:")
 	case err != nil:
-		// сервис геокодинга недоступен — не роняем регистрацию, даём пользователю повторить попытку
+
 		return c.Send("Не получилось определить часовой пояс для этого города (сервис временно недоступен). Попробуйте ещё раз чуть позже:")
 	}
 
