@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const inactivityTimeout = 15 * time.Second
+
 type UserStore interface {
 	Save(ctx context.Context, u model.User) error
 }
@@ -24,4 +26,6 @@ type registrationState struct {
 	longitude  float64
 	timezone   string
 	notifyTime time.Time
+
+	cancelTimeout context.CancelFunc
 }

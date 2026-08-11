@@ -43,6 +43,17 @@ func (s *stateStore) delete(userID int64) {
 	delete(s.states, userID)
 }
 
+func (s *stateStore) deleteIfSame(userID int64, state *registrationState) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	curr, exists := s.states[userID]
+	if exists && curr == state {
+		delete(s.states, userID)
+		return true
+	}
+	return false
+}
+
 type Handler struct {
 	bot      *telebot.Bot
 	store    UserStore
@@ -80,8 +91,12 @@ func (h *Handler) cancel(c telebot.Context) error {
 		return nil
 	}
 	userID := c.Sender().ID
-	if _, exists := h.states.get(userID); !exists {
+	state, exists := h.states.get(userID)
+	if !exists {
 		return c.Send("Сейчас нет активной регистрации.")
+	}
+	if state.cancelTimeout != nil {
+		state.cancelTimeout()
 	}
 	h.states.delete(userID)
 	return c.Send("Регистрация отменена. Начать заново — /register")
@@ -99,16 +114,22 @@ func (h *Handler) handleRegistrationMessage(c telebot.Context) error {
 		return nil
 	}
 
+	var stepErr error
 	switch state.step {
 	case stepAwaitingCity:
-		return h.handleCityStep(c, userID, state)
+		stepErr = h.handleCityStep(c, userID, state)
 	case stepAwaitingTime:
-		return h.handleTimeStep(c, userID, state)
+		stepErr = h.handleTimeStep(c, userID, state)
 	default:
-
 		h.states.delete(userID)
 		return c.Send("Что-то пошло не так, начните заново: /register")
 	}
+
+	if curr, stillActive := h.states.get(userID); stillActive && curr == state {
+		h.armInactivityTimer(userID, curr)
+	}
+
+	return stepErr
 }
 
 func (h *Handler) handleCityStep(c telebot.Context, userID int64, state *registrationState) error {
@@ -166,10 +187,33 @@ func (h *Handler) handleTimeStep(c telebot.Context, userID int64, state *registr
 		return c.Send("Не получилось сохранить регистрацию, попробуйте позже.")
 	}
 
+	if state.cancelTimeout != nil {
+		state.cancelTimeout()
+	}
+
 	h.states.delete(userID)
 
 	return c.Send(fmt.Sprintf(
 		"Готово! Буду присылать погоду в %s (%s) каждый день в %s.",
 		state.city, state.timezone, state.notifyTime.Format("15:04"),
 	))
+}
+
+func (h *Handler) armInactivityTimer(userID int64, state *registrationState) {
+	if state.cancelTimeout != nil {
+		state.cancelTimeout()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), inactivityTimeout)
+	state.cancelTimeout = cancel
+	go h.watchInactivity(ctx, userID, state)
+}
+func (h *Handler) watchInactivity(ctx context.Context, userID int64, state *registrationState) {
+	<-ctx.Done()
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return
+	}
+
+	if h.states.deleteIfSame(userID, state) {
+		h.bot.Send(telebot.ChatID(userID), "Вы были неактивны! Регистрация отменена. Начните заново — /register")
+	}
 }

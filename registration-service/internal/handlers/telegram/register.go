@@ -7,6 +7,8 @@ func (h *Handler) register(c telebot.Context) error {
 		return nil
 	}
 	userID := c.Sender().ID
-	h.states.set(userID, &registrationState{step: stepAwaitingCity})
+	state := &registrationState{step: stepAwaitingCity}
+	h.states.set(userID, state)
+	h.armInactivityTimer(userID, state)
 	return c.Send("Введите ваш город:")
 }
