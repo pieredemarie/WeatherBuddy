@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"log"
+	"registration-service/internal/repository/postgres"
 	"time"
 
 	"registration-service/internal/config"
@@ -9,15 +11,19 @@ import (
 	tghandler "registration-service/internal/handlers/telegram"
 )
 
-type stubUserStore struct{}
-
-func (stubUserStore) Save(u tghandler.RegisteredUser) error {
-	log.Printf("[stub store] saved: %+v", u)
-	return nil
-}
-
 func Run() {
 	cfg := config.MustLoad()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	db, err := postgres.NewDB(ctx, cfg.PostgresDSN)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	store := postgres.NewPostgresRepo(db)
 
 	geocoder := geocoding.WithRetry(
 		geocoding.NewOpenMeteoGeocoder(),
@@ -25,7 +31,7 @@ func Run() {
 		500*time.Millisecond, // baseDelay: 500ms, 1s, 2s
 	)
 
-	handler, err := tghandler.New(cfg.BotToken, stubUserStore{}, geocoder)
+	handler, err := tghandler.New(cfg.BotToken, store, geocoder)
 	if err != nil {
 		log.Fatal(err)
 	}
