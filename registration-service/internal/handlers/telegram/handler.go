@@ -15,17 +15,12 @@ import (
 	"registration-service/internal/model"
 )
 
-// RegistrationService — то, что нужно Telegram-хендлеру от бизнес-логики.
-// Интерфейс определён здесь (в потребителе), а не в пакете service — так его
-// проще мокать в тестах хендлера.
 type RegistrationService interface {
 	ResolveCity(ctx context.Context, city string) (geocoding.GeoLocation, error)
 	ParseNotifyTime(text string) (time.Time, error)
 	Register(ctx context.Context, contactType model.ContactType, contactValue string, loc geocoding.GeoLocation, notifyTime time.Time) (model.User, error)
 }
 
-// inactivityTimeout — сколько ждём следующего сообщения от пользователя в процессе
-// регистрации, прежде чем считать его неактивным и сбрасывать прогресс.
 const inactivityTimeout = 5 * time.Second
 
 type registrationStep int

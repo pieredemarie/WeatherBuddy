@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"registration-service/internal/repository/postgres"
+	"registration-service/internal/service"
 	"time"
 
 	"registration-service/internal/config"
@@ -31,7 +32,9 @@ func Run() {
 		500*time.Millisecond, // baseDelay: 500ms, 1s, 2s
 	)
 
-	handler, err := tghandler.New(cfg.BotToken, store, geocoder)
+	regService := service.NewRegistrationService(geocoder, store)
+
+	handler, err := tghandler.New(cfg.BotToken, regService)
 	if err != nil {
 		log.Fatal(err)
 	}
