@@ -15,6 +15,34 @@ import (
 	"registration-service/internal/model"
 )
 
+// RegistrationService — то, что нужно Telegram-хендлеру от бизнес-логики.
+// Интерфейс определён здесь (в потребителе), а не в пакете service — так его
+// проще мокать в тестах хендлера.
+type RegistrationService interface {
+	ResolveCity(ctx context.Context, city string) (geocoding.GeoLocation, error)
+	ParseNotifyTime(text string) (time.Time, error)
+	Register(ctx context.Context, contactType model.ContactType, contactValue string, loc geocoding.GeoLocation, notifyTime time.Time) (model.User, error)
+}
+
+// inactivityTimeout — сколько ждём следующего сообщения от пользователя в процессе
+// регистрации, прежде чем считать его неактивным и сбрасывать прогресс.
+const inactivityTimeout = 5 * time.Second
+
+type registrationStep int
+
+const (
+	stepAwaitingCity registrationStep = iota
+	stepAwaitingTime
+)
+
+type registrationState struct {
+	step       registrationStep
+	location   geocoding.GeoLocation
+	notifyTime time.Time
+
+	cancelTimeout context.CancelFunc
+}
+
 type stateStore struct {
 	mu     sync.Mutex
 	states map[int64]*registrationState
@@ -46,8 +74,8 @@ func (s *stateStore) delete(userID int64) {
 func (s *stateStore) deleteIfSame(userID int64, state *registrationState) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	curr, exists := s.states[userID]
-	if exists && curr == state {
+	current, exists := s.states[userID]
+	if exists && current == state {
 		delete(s.states, userID)
 		return true
 	}
@@ -55,13 +83,12 @@ func (s *stateStore) deleteIfSame(userID int64, state *registrationState) bool {
 }
 
 type Handler struct {
-	bot      *telebot.Bot
-	store    UserStore
-	geocoder geocoding.Geocoder
-	states   *stateStore
+	bot     *telebot.Bot
+	service RegistrationService
+	states  *stateStore
 }
 
-func New(token string, store UserStore, geocoder geocoding.Geocoder) (*Handler, error) {
+func New(token string, service RegistrationService) (*Handler, error) {
 	bot, err := telebot.NewBot(telebot.Settings{
 		Token: token,
 		Poller: &telebot.LongPoller{
@@ -72,10 +99,9 @@ func New(token string, store UserStore, geocoder geocoding.Geocoder) (*Handler, 
 		return nil, err
 	}
 	return &Handler{
-		bot:      bot,
-		store:    store,
-		geocoder: geocoder,
-		states:   newStateStore(),
+		bot:     bot,
+		service: service,
+		states:  newStateStore(),
 	}, nil
 }
 
@@ -84,6 +110,25 @@ func (h *Handler) Register() {
 	h.bot.Handle("/register", h.register)
 	h.bot.Handle("/cancel", h.cancel)
 	h.bot.Handle(telebot.OnText, h.handleRegistrationMessage)
+}
+
+func (h *Handler) Start() {
+	h.bot.Start()
+}
+
+func (h *Handler) start(c telebot.Context) error {
+	return c.Send("WeatherBuddy started")
+}
+
+func (h *Handler) register(c telebot.Context) error {
+	if c.Sender() == nil {
+		return nil
+	}
+	userID := c.Sender().ID
+	state := &registrationState{step: stepAwaitingCity}
+	h.states.set(userID, state)
+	h.armInactivityTimer(userID, state)
+	return c.Send("Введите ваш город:")
 }
 
 func (h *Handler) cancel(c telebot.Context) error {
@@ -110,7 +155,6 @@ func (h *Handler) handleRegistrationMessage(c telebot.Context) error {
 
 	state, exists := h.states.get(userID)
 	if !exists {
-
 		return nil
 	}
 
@@ -125,11 +169,30 @@ func (h *Handler) handleRegistrationMessage(c telebot.Context) error {
 		return c.Send("Что-то пошло не так, начните заново: /register")
 	}
 
-	if curr, stillActive := h.states.get(userID); stillActive && curr == state {
-		h.armInactivityTimer(userID, curr)
+	if current, stillActive := h.states.get(userID); stillActive && current == state {
+		h.armInactivityTimer(userID, current)
 	}
 
 	return stepErr
+}
+
+func (h *Handler) armInactivityTimer(userID int64, state *registrationState) {
+	if state.cancelTimeout != nil {
+		state.cancelTimeout()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), inactivityTimeout)
+	state.cancelTimeout = cancel
+	go h.watchInactivity(ctx, userID, state)
+}
+
+func (h *Handler) watchInactivity(ctx context.Context, userID int64, state *registrationState) {
+	<-ctx.Done()
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return
+	}
+	if h.states.deleteIfSame(userID, state) {
+		h.bot.Send(telebot.ChatID(userID), "Вы были неактивны! Регистрация отменена. Начните заново — /register")
+	}
 }
 
 func (h *Handler) handleCityStep(c telebot.Context, userID int64, state *registrationState) error {
@@ -141,7 +204,7 @@ func (h *Handler) handleCityStep(c telebot.Context, userID int64, state *registr
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	loc, err := h.geocoder.Resolve(ctx, cityInput)
+	loc, err := h.service.ResolveCity(ctx, cityInput)
 	switch {
 	case errors.Is(err, geocoding.ErrCityNotFound):
 		return c.Send("Не смог найти такой город. Проверьте написание и попробуйте ещё раз:")
@@ -149,71 +212,39 @@ func (h *Handler) handleCityStep(c telebot.Context, userID int64, state *registr
 		return c.Send("Не получилось определить часовой пояс для этого города (сервис временно недоступен). Попробуйте ещё раз чуть позже:")
 	}
 
-	state.city = loc.City
-	state.latitude = loc.Latitude
-	state.longitude = loc.Longitude
-	state.timezone = loc.Timezone
+	state.location = loc
 	state.step = stepAwaitingTime
 	h.states.set(userID, state)
 
 	return c.Send(fmt.Sprintf(
 		"Город сохранён: %s (часовой пояс: %s)\n\nТеперь введите время рассылки в формате HH:MM.\nНапример: 08:00",
-		state.city, state.timezone,
+		state.location.City, state.location.Timezone,
 	))
 }
 
 func (h *Handler) handleTimeStep(c telebot.Context, userID int64, state *registrationState) error {
 	timeText := strings.TrimSpace(c.Text())
-	parsedTime, err := time.Parse("15:04", timeText)
+	parsedTime, err := h.service.ParseNotifyTime(timeText)
 	if err != nil {
 		return c.Send("Не похоже на время в формате HH:MM. Попробуйте ещё раз, например 08:00:")
 	}
 	state.notifyTime = parsedTime
 
-	user := model.User{
-		ContactType:  model.ContactTelegram,
-		ContactValue: strconv.FormatInt(userID, 10),
-		City:         state.city,
-		Latitude:     state.latitude,
-		Longitude:    state.longitude,
-		Timezone:     state.timezone,
-		NotifyTime:   state.notifyTime,
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := h.store.Save(ctx, user); err != nil {
+	user, err := h.service.Register(ctx, model.ContactTelegram, strconv.FormatInt(userID, 10), state.location, state.notifyTime)
+	if err != nil {
 		return c.Send("Не получилось сохранить регистрацию, попробуйте позже.")
 	}
 
 	if state.cancelTimeout != nil {
 		state.cancelTimeout()
 	}
-
 	h.states.delete(userID)
 
 	return c.Send(fmt.Sprintf(
 		"Готово! Буду присылать погоду в %s (%s) каждый день в %s.",
-		state.city, state.timezone, state.notifyTime.Format("15:04"),
+		user.City, user.Timezone, user.NotifyTime.Format("15:04"),
 	))
-}
-
-func (h *Handler) armInactivityTimer(userID int64, state *registrationState) {
-	if state.cancelTimeout != nil {
-		state.cancelTimeout()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), inactivityTimeout)
-	state.cancelTimeout = cancel
-	go h.watchInactivity(ctx, userID, state)
-}
-func (h *Handler) watchInactivity(ctx context.Context, userID int64, state *registrationState) {
-	<-ctx.Done()
-	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return
-	}
-
-	if h.states.deleteIfSame(userID, state) {
-		h.bot.Send(telebot.ChatID(userID), "Вы были неактивны! Регистрация отменена. Начните заново — /register")
-	}
 }
