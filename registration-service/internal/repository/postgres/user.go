@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// PostgresRepo — репозиторий регистраций поверх таблицы users.
 type PostgresRepo struct {
 	DB *sql.DB
 }
@@ -41,9 +42,8 @@ func (r *PostgresRepo) Save(ctx context.Context, u model.User) error {
 		u.Timezone,
 		toPGTime(u.NotifyTime),
 	)
-
 	if err != nil {
-		return fmt.Errorf("cannot save user: %w", err)
+		return fmt.Errorf("save user: %w", err)
 	}
 	return nil
 }
@@ -51,4 +51,12 @@ func (r *PostgresRepo) Save(ctx context.Context, u model.User) error {
 func toPGTime(t time.Time) pgtype.Time {
 	micros := int64(t.Hour())*3600e6 + int64(t.Minute())*60e6 + int64(t.Second())*1e6
 	return pgtype.Time{Microseconds: micros, Valid: true}
+}
+
+func fromPGTime(t pgtype.Time) time.Time {
+	if !t.Valid {
+		return time.Time{}
+	}
+	return time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC).
+		Add(time.Duration(t.Microseconds) * time.Microsecond)
 }

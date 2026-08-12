@@ -23,7 +23,13 @@ func MustLoad() *Config {
 		log.Fatal("BOT_TOKEN is empty")
 	}
 
+	dsn := os.Getenv("POSTGRES_DSN")
+	if dsn == "" {
+		log.Fatal("POSTGRES_DSN is empty")
+	}
+
 	return &Config{
-		BotToken: token,
+		BotToken:    token,
+		PostgresDSN: dsn,
 	}
 }

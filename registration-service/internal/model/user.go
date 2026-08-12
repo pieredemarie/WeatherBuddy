@@ -20,6 +20,6 @@ type User struct {
 	Timezone   string
 	NotifyTime time.Time
 
-	isActive  bool
+	Active    bool
 	CreatedAt time.Time
 }
