@@ -15,6 +15,5 @@ func NewDB(ctx context.Context, dsn string) (*sql.DB, error) {
 	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("postgres.PingContext: %w", err)
 	}
-
 	return db, nil
 }
