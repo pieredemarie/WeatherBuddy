@@ -8,6 +8,8 @@ import (
 	"scheduler-service/internal/repository/postgres"
 	"scheduler-service/internal/service"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func main() {
