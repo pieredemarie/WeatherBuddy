@@ -18,6 +18,7 @@ type NotificationJob struct {
 	City         string  `json:"city"`
 	Latitude     float64 `json:"latitude"`
 	Longitude    float64 `json:"longitude"`
+	Timezone     string  `json:"timezone"`
 }
 
 type Producer struct {

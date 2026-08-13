@@ -39,6 +39,7 @@ func (s *SchedulerService) Tick(ctx context.Context) error {
 			City:         u.City,
 			Latitude:     u.Latitude,
 			Longitude:    u.Longitude,
+			Timezone:     u.Timezone,
 		}
 
 		if err := s.publisher.Publish(ctx, job); err != nil {
