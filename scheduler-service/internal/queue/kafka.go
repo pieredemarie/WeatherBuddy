@@ -9,12 +9,12 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-const NotificationJobsTopic = "notification-jobs"
+const NotificationJobsTopic = "notification_jobs"
 
 type NotificationJob struct {
 	UserID       int     `json:"user_id"`
-	ContactType  int     `json:"contact_type"`
-	ContactValue int     `json:"contact_value"`
+	ContactType  string  `json:"contact_type"`
+	ContactValue string  `json:"contact_value"`
 	City         string  `json:"city"`
 	Latitude     float64 `json:"latitude"`
 	Longitude    float64 `json:"longitude"`
